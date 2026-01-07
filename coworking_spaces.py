@@ -278,6 +278,90 @@ def update_coworking_space(event):
     }
 
 
+def update_coworking_space_full(event):
+    # Log do evento original (cuidado em produção)
+    try:
+        print("🟡 Event (keys):", list(event.keys()))
+        print("🟡 Event body (raw):", (event.get('body') or '')[:1000])  # limita tamanho
+        print("🟡 QueryStringParameters:", event.get('queryStringParameters'))
+    except Exception as e:
+        print("⚠️ Falha ao logar event:", str(e))
+
+    # Parse do body
+    try:
+        body = json.loads(event.get('body') or '{}')
+    except Exception as e:
+        print("❌ JSON inválido no body:", str(e))
+        return {'statusCode': 400, 'body': json.dumps({'message': 'Body inválido (JSON)'})}
+
+    # Aceitar 'spaceId' OU 'id'
+    space_id = (body.get('spaceId') or body.get('id') or '').strip()
+    source = 'body'
+    if not space_id:
+        query = event.get('queryStringParameters') or {}
+        space_id = (query.get('spaceId') or '').strip()
+        source = 'queryString'
+
+    print(f"🔎 space_id resolvido: '{space_id}' (origem: {source})")
+
+    if not space_id:
+        print("❌ spaceId ausente")
+        return {'statusCode': 400, 'body': json.dumps({'message': 'spaceId obrigatório'})}
+
+    # Mapeamento de campos (logando o que chegou e o que será enviado)
+    updates = {}
+
+    def set_if_present(src_key, dst_key, transform=lambda v: v):
+        v = body.get(src_key, None)
+        if v is not None:
+            try:
+                tv = transform(v)
+                updates[dst_key] = tv
+                print(f"✅ Campo mapeado: {src_key} -> {dst_key} = {repr(tv)}")
+            except Exception as e:
+                print(f"⚠️ Falha ao transformar {src_key} -> {dst_key}: {repr(v)}; erro: {str(e)}")
+        else:
+            print(f"⏭️ Campo ausente (não mapeado): {src_key}")
+
+    set_if_present('title', 'name')
+    set_if_present('description', 'descricao')
+    set_if_present('capacity', 'capacity')
+    set_if_present('pricePerHour', 'precoHora', lambda v: Decimal(str(float(v or 0))))
+    # Atenção: confirme a semântica de availability vs isEnabled (true/false)
+    set_if_present('isEnabled', 'availability')
+    set_if_present('autoApprove', 'autoApprove')
+    set_if_present('facilityIDs', 'amenities')
+    set_if_present('weekdays', 'diasSemana')
+    set_if_present('minDurationMinutes', 'minDurationMinutes')
+    set_if_present('bufferMinutes', 'bufferMinutes')
+
+    if not updates:
+        print("❌ Nenhum campo para atualizar (body vazio ou sem chaves esperadas)")
+        return {'statusCode': 400, 'body': json.dumps({'message': 'Nenhum campo para atualizar'})}
+
+    update_expression = "set " + ", ".join([f"{k} = :{k}" for k in updates.keys()])
+    expression_attribute_values = {f":{k}": v for k, v in updates.items()}
+
+    print("🛠️ UpdateExpression:", update_expression)
+    # Para evitar logar valores sensíveis, só mostre as chaves e tipos:
+    sanitized_values = {k: f"{type(v).__name__}({repr(v)[:60]})" for k, v in expression_attribute_values.items()}
+    print("🛠️ ExpressionAttributeValues (sanitized):", sanitized_values)
+
+    try:
+        resp = table.update_item(
+            Key={'spaceId': space_id},
+            UpdateExpression=update_expression,
+            ExpressionAttributeValues=expression_attribute_values,
+            ReturnValues="UPDATED_NEW"
+        )
+        print("✅ DynamoDB update OK:", json.dumps(resp.get('Attributes', {}), default=decimal_default)[:1000])
+        return {'statusCode': 200, 'body': json.dumps(resp['Attributes'], default=decimal_default)}
+    except Exception as e:
+        print("❌ DynamoDB update_item falhou:", str(e))
+        return {'statusCode': 500, 'body': json.dumps({'message': 'Falha ao atualizar', 'error': str(e)})}
+
+
+
 def delete_coworking_space(event):
     space_id = event['queryStringParameters']['spaceId']
     table.delete_item(Key={'spaceId': space_id})
