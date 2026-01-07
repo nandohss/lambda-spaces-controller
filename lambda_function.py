@@ -4,6 +4,7 @@ from coworking_spaces import (
     get_coworking_space,
     get_available_coworking_spaces,
     update_coworking_space,
+    update_coworking_space_full,
     delete_coworking_space,
     get_user_by_id,
     get_spaces_by_hoster
@@ -54,6 +55,8 @@ def lambda_handler(event, context):
         user_id = resource.replace('/users/', '')
         event['pathParameters'] = {'userId': user_id}
         return get_user_by_id(event)
+    elif route_key == 'PUT /spaces/full':
+      return update_coworking_space_full(event)
 
     # Rota não reconhecida
     return {

@@ -19,16 +19,32 @@ def decimal_default(obj):
 def add_coworking_space(event):
     body = json.loads(event['body'])
 
+    # IDs e básicos do espaço
     space_id = body['spaceId']
     name = body['name']
-    city = body['city']
-    country = body['country']
-    district = body['district']
-    capacity = body['capacity']
-    amenities = body['amenities']
-    availability = body['availability']
+    city = body.get('city')  # já vinha
+    country = body.get('country', 'Brasil')  # default se não vier
+    district = body.get('district')  # já vinha
+    capacity = body.get('capacity')
+    amenities = body.get('amenities', [])
+    availability = body.get('availability', True)
     hoster = body['hoster']
 
+    # Novos campos de informações básicas / contato
+    email = body.get('email')
+    cnpj = body.get('cnpj')
+    ddd = body.get('ddd')
+    numero_telefone = body.get('numeroTelefone')
+    telefone_completo = body.get('telefoneCompleto')  # já chega normalizado (apenas dígitos)
+    razao_social = body.get('razaoSocial')
+
+    # Novos campos de endereço (além de city/district/country)
+    street = body.get('street')
+    number = body.get('number')
+    complement = body.get('complement')
+    state = body.get('state')
+
+    # Campos do espaço
     categoria = body.get('categoria')
     subcategoria = body.get('subcategoria')
     descricao = body.get('descricao')
@@ -36,15 +52,36 @@ def add_coworking_space(event):
     dias_semana = body.get('diasSemana', [])
     hora_inicio = body.get('horaInicio')
     hora_fim = body.get('horaFim')
-    preco_hora = float(body.get('precoHora', 0))
-    preco_dia = float(body.get('precoDia', 0))
+
+    # Preços: podem vir como string (ex: "100.50") — converter para float → Decimal
+    try:
+        preco_hora = float(body.get('precoHora', 0) or 0)
+    except Exception:
+        preco_hora = 0.0
+    try:
+        preco_dia = float(body.get('precoDia', 0) or 0)
+    except Exception:
+        preco_dia = 0.0
 
     item = {
         'spaceId': space_id,
         'name': name,
-        'city': city,
-        'country': country,
+        # Endereço completo
+        'street': street,
+        'number': number,
+        'complement': complement,
         'district': district,
+        'city': city,
+        'state': state,
+        'country': country,
+        # Contato / empresa
+        'email': email,
+        'cnpj': cnpj,
+        'ddd': ddd,
+        'numeroTelefone': numero_telefone,
+        'telefoneCompleto': telefone_completo,
+        'razaoSocial': razao_social,
+        # Dados do espaço
         'capacity': capacity,
         'amenities': amenities,
         'availability': availability,
@@ -57,19 +94,24 @@ def add_coworking_space(event):
         'horaInicio': hora_inicio,
         'horaFim': hora_fim,
         'precoHora': Decimal(str(preco_hora)),
-        'precoDia': Decimal(str(preco_dia))
+        'precoDia': Decimal(str(preco_dia)),
     }
 
+    # Imagem (opcional)
     imagem_url = body.get('imagemUrl')
     if imagem_url:
         item['imagemUrl'] = imagem_url
 
+    # Remove chaves com valor None para não poluir o item no DynamoDB
+    item = {k: v for k, v in item.items() if v is not None}
+
     print("✅ Salvando item no DynamoDB:", json.dumps(item, default=decimal_default))
     table.put_item(Item=item)
 
+    # Marca o usuário como hoster
     try:
         users_table.update_item(
-            Key={'userId': hoster},  # Supondo que hoster seja o userId
+            Key={'userId': hoster},
             UpdateExpression="set isHoster = :true_val",
             ExpressionAttributeValues={':true_val': True},
             ReturnValues="UPDATED_NEW"
@@ -166,30 +208,54 @@ def update_coworking_space(event):
     update_expression = "set"
     expression_attribute_values = {}
 
-    if 'name' in body:
-        update_expression += " name = :n,"
-        expression_attribute_values[':n'] = body['name']
-    if 'city' in body:
-        update_expression += " city = :c,"
-        expression_attribute_values[':c'] = body['city']
-    if 'country' in body:
-        update_expression += " country = :co,"
-        expression_attribute_values[':co'] = body['country']
-    if 'district' in body:
-        update_expression += " district = :d,"
-        expression_attribute_values[':d'] = body['district']
-    if 'capacity' in body:
-        update_expression += " capacity = :ca,"
-        expression_attribute_values[':ca'] = body['capacity']
-    if 'amenities' in body:
-        update_expression += " amenities = :a,"
-        expression_attribute_values[':a'] = body['amenities']
-    if 'availability' in body:
-        update_expression += " availability = :av,"
-        expression_attribute_values[':av'] = body['availability']
-    if 'hoster' in body:
-        update_expression += " hoster = :h,"
-        expression_attribute_values[':h'] = body['hoster']
+    # Campos atualizáveis (adicionei os novos também)
+    def add_update(field, alias):
+        nonlocal update_expression, expression_attribute_values
+        if field in body:
+            update_expression += f" {field} = {alias},"
+            expression_attribute_values[alias] = body[field]
+
+    add_update('name', ':n')
+    add_update('city', ':c')
+    add_update('country', ':co')
+    add_update('district', ':d')
+    add_update('street', ':st')
+    add_update('number', ':nu')
+    add_update('complement', ':cp')
+    add_update('state', ':uf')
+
+    add_update('email', ':em')
+    add_update('cnpj', ':cn')
+    add_update('ddd', ':dd')
+    add_update('numeroTelefone', ':nt')
+    add_update('telefoneCompleto', ':tc')
+    add_update('razaoSocial', ':rs')
+
+    add_update('capacity', ':ca')
+    add_update('amenities', ':a')
+    add_update('availability', ':av')
+    add_update('hoster', ':h')
+    add_update('categoria', ':cat')
+    add_update('subcategoria', ':sub')
+    add_update('descricao', ':desc')
+    add_update('regras', ':reg')
+    add_update('diasSemana', ':ds')
+    add_update('horaInicio', ':hi')
+    add_update('horaFim', ':hf')
+
+    if 'precoHora' in body:
+        try:
+            expression_attribute_values[':ph'] = Decimal(str(float(body['precoHora'] or 0)))
+        except Exception:
+            expression_attribute_values[':ph'] = Decimal('0')
+        update_expression += " precoHora = :ph,"
+    if 'precoDia' in body:
+        try:
+            expression_attribute_values[':pd'] = Decimal(str(float(body['precoDia'] or 0)))
+        except Exception:
+            expression_attribute_values[':pd'] = Decimal('0')
+        update_expression += " precoDia = :pd,"
+
     if 'imagemUrl' in body:
         update_expression += " imagemUrl = :img,"
         expression_attribute_values[':img'] = body['imagemUrl']
@@ -210,6 +276,90 @@ def update_coworking_space(event):
         'statusCode': 200,
         'body': json.dumps(response['Attributes'], default=decimal_default)
     }
+
+
+def update_coworking_space_full(event):
+    # Log do evento original (cuidado em produção)
+    try:
+        print("🟡 Event (keys):", list(event.keys()))
+        print("🟡 Event body (raw):", (event.get('body') or '')[:1000])  # limita tamanho
+        print("🟡 QueryStringParameters:", event.get('queryStringParameters'))
+    except Exception as e:
+        print("⚠️ Falha ao logar event:", str(e))
+
+    # Parse do body
+    try:
+        body = json.loads(event.get('body') or '{}')
+    except Exception as e:
+        print("❌ JSON inválido no body:", str(e))
+        return {'statusCode': 400, 'body': json.dumps({'message': 'Body inválido (JSON)'})}
+
+    # Aceitar 'spaceId' OU 'id'
+    space_id = (body.get('spaceId') or body.get('id') or '').strip()
+    source = 'body'
+    if not space_id:
+        query = event.get('queryStringParameters') or {}
+        space_id = (query.get('spaceId') or '').strip()
+        source = 'queryString'
+
+    print(f"🔎 space_id resolvido: '{space_id}' (origem: {source})")
+
+    if not space_id:
+        print("❌ spaceId ausente")
+        return {'statusCode': 400, 'body': json.dumps({'message': 'spaceId obrigatório'})}
+
+    # Mapeamento de campos (logando o que chegou e o que será enviado)
+    updates = {}
+
+    def set_if_present(src_key, dst_key, transform=lambda v: v):
+        v = body.get(src_key, None)
+        if v is not None:
+            try:
+                tv = transform(v)
+                updates[dst_key] = tv
+                print(f"✅ Campo mapeado: {src_key} -> {dst_key} = {repr(tv)}")
+            except Exception as e:
+                print(f"⚠️ Falha ao transformar {src_key} -> {dst_key}: {repr(v)}; erro: {str(e)}")
+        else:
+            print(f"⏭️ Campo ausente (não mapeado): {src_key}")
+
+    set_if_present('title', 'name')
+    set_if_present('description', 'descricao')
+    set_if_present('capacity', 'capacity')
+    set_if_present('pricePerHour', 'precoHora', lambda v: Decimal(str(float(v or 0))))
+    # Atenção: confirme a semântica de availability vs isEnabled (true/false)
+    set_if_present('isEnabled', 'availability')
+    set_if_present('autoApprove', 'autoApprove')
+    set_if_present('facilityIDs', 'amenities')
+    set_if_present('weekdays', 'diasSemana')
+    set_if_present('minDurationMinutes', 'minDurationMinutes')
+    set_if_present('bufferMinutes', 'bufferMinutes')
+
+    if not updates:
+        print("❌ Nenhum campo para atualizar (body vazio ou sem chaves esperadas)")
+        return {'statusCode': 400, 'body': json.dumps({'message': 'Nenhum campo para atualizar'})}
+
+    update_expression = "set " + ", ".join([f"{k} = :{k}" for k in updates.keys()])
+    expression_attribute_values = {f":{k}": v for k, v in updates.items()}
+
+    print("🛠️ UpdateExpression:", update_expression)
+    # Para evitar logar valores sensíveis, só mostre as chaves e tipos:
+    sanitized_values = {k: f"{type(v).__name__}({repr(v)[:60]})" for k, v in expression_attribute_values.items()}
+    print("🛠️ ExpressionAttributeValues (sanitized):", sanitized_values)
+
+    try:
+        resp = table.update_item(
+            Key={'spaceId': space_id},
+            UpdateExpression=update_expression,
+            ExpressionAttributeValues=expression_attribute_values,
+            ReturnValues="UPDATED_NEW"
+        )
+        print("✅ DynamoDB update OK:", json.dumps(resp.get('Attributes', {}), default=decimal_default)[:1000])
+        return {'statusCode': 200, 'body': json.dumps(resp['Attributes'], default=decimal_default)}
+    except Exception as e:
+        print("❌ DynamoDB update_item falhou:", str(e))
+        return {'statusCode': 500, 'body': json.dumps({'message': 'Falha ao atualizar', 'error': str(e)})}
+
 
 
 def delete_coworking_space(event):
@@ -290,7 +440,6 @@ def get_spaces_by_hoster(event):
 
     # 2) tentar Query em GSI
     try:
-        # Teste rápido do GSI: se não existir, Dynamo levanta ValidationException
         resp = table.query(
             IndexName='byHoster',              # GSI esperado (PK: hoster)
             KeyConditionExpression=Key('hoster').eq(user_id)
@@ -298,7 +447,6 @@ def get_spaces_by_hoster(event):
         items = resp.get('Items', [])
         print(f"✅ Query em GSI byHoster retornou {len(items)} itens")
     except Exception as e:
-        # Fallback: Scan com filtro
         print("⚠️ GSI byHoster indisponível. Fazendo Scan com filtro. Motivo:", str(e))
         resp = table.scan(
             FilterExpression=Attr('hoster').eq(user_id)
@@ -309,7 +457,6 @@ def get_spaces_by_hoster(event):
     # Conversões leves (mesma linha do get_available_coworking_spaces)
     norm = []
     for it in items:
-        # amenities pode vir como lista de mapas/strings
         if 'amenities' in it and isinstance(it['amenities'], list):
             try:
                 if all(isinstance(a, dict) and 'S' in a for a in it['amenities']):
@@ -319,7 +466,6 @@ def get_spaces_by_hoster(event):
             except Exception:
                 it['amenities'] = []
 
-        # preços para float (o app trata como Double)
         try:
             it['precoHora'] = float(it.get('precoHora', 0) or 0)
             it['precoDia'] = float(it.get('precoDia', 0) or 0)
