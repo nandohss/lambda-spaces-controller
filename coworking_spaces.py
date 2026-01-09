@@ -23,8 +23,8 @@ def add_coworking_space(event):
     space_id = body['spaceId']
     name = body['name']
     city = body.get('city')  # já vinha
-    country = body.get('country', 'Brasil')  # default se não vier
-    district = body.get('district')  # já vinha
+    country = body.get('country', 'Brasil')
+    district = body.get('district')
     capacity = body.get('capacity')
     amenities = body.get('amenities', [])
     availability = body.get('availability', True)
@@ -52,6 +52,8 @@ def add_coworking_space(event):
     dias_semana = body.get('diasSemana', [])
     hora_inicio = body.get('horaInicio')
     hora_fim = body.get('horaFim')
+    min_duration_minutes = body.get('minDurationMinutes', 60)
+    buffer_minutes = body.get('bufferMinutes', 15)
 
     # Preços: podem vir como string (ex: "100.50") — converter para float → Decimal
     try:
@@ -93,8 +95,11 @@ def add_coworking_space(event):
         'diasSemana': dias_semana,
         'horaInicio': hora_inicio,
         'horaFim': hora_fim,
+        'minDurationMinutes': min_duration_minutes,
+        'bufferMinutes': buffer_minutes,
         'precoHora': Decimal(str(preco_hora)),
         'precoDia': Decimal(str(preco_dia)),
+        'diaInteiro': body.get('diaInteiro', False),
     }
 
     # Imagem (opcional)
@@ -102,7 +107,6 @@ def add_coworking_space(event):
     if imagem_url:
         item['imagemUrl'] = imagem_url
 
-    # Remove chaves com valor None para não poluir o item no DynamoDB
     item = {k: v for k, v in item.items() if v is not None}
 
     print("✅ Salvando item no DynamoDB:", json.dumps(item, default=decimal_default))
@@ -176,7 +180,10 @@ def get_available_coworking_spaces(event):
             except Exception as e:
                 print("⚠️ Erro ao processar preços:", e)
                 item['precoHora'] = 0
+                item['precoHora'] = 0
                 item['precoDia'] = 0
+
+            item['diaInteiro'] = item.get('diaInteiro', False)
 
             for campo in ['name', 'city', 'district']:
                 if campo not in item:
@@ -323,27 +330,44 @@ def update_coworking_space_full(event):
         else:
             print(f"⏭️ Campo ausente (não mapeado): {src_key}")
 
+    # Mapa reverso para salvar como string (consistência com legado)
+    week_map = {1: "Dom", 2: "Seg", 3: "Ter", 4: "Qua", 5: "Qui", 6: "Sex", 7: "Sáb"}
+
+    def map_weekdays(days):
+        if not isinstance(days, list): return []
+        return [week_map.get(d, str(d)) if isinstance(d, int) else d for d in days]
+
     set_if_present('title', 'name')
     set_if_present('description', 'descricao')
     set_if_present('capacity', 'capacity')
     set_if_present('pricePerHour', 'precoHora', lambda v: Decimal(str(float(v or 0))))
-    # Atenção: confirme a semântica de availability vs isEnabled (true/false)
+    set_if_present('pricePerDay', 'precoDia', lambda v: Decimal(str(float(v or 0))))
+    set_if_present('isFullDay', 'diaInteiro')
     set_if_present('isEnabled', 'availability')
     set_if_present('autoApprove', 'autoApprove')
     set_if_present('facilityIDs', 'amenities')
-    set_if_present('weekdays', 'diasSemana')
+    set_if_present('weekdays', 'diasSemana', map_weekdays)
     set_if_present('minDurationMinutes', 'minDurationMinutes')
     set_if_present('bufferMinutes', 'bufferMinutes')
+    set_if_present('regras', 'regras')
+    set_if_present('horaInicio', 'horaInicio')
+    set_if_present('horaInicio', 'horaInicio')
+    set_if_present('horaFim', 'horaFim')
+    set_if_present('email', 'email')
+    set_if_present('ddd', 'ddd')
+    set_if_present('numeroTelefone', 'numeroTelefone')
+    set_if_present('telefoneCompleto', 'telefoneCompleto')
+    set_if_present('razaoSocial', 'razaoSocial')
 
     if not updates:
         print("❌ Nenhum campo para atualizar (body vazio ou sem chaves esperadas)")
         return {'statusCode': 400, 'body': json.dumps({'message': 'Nenhum campo para atualizar'})}
 
-    update_expression = "set " + ", ".join([f"{k} = :{k}" for k in updates.keys()])
+    update_expression = "set " + ", ".join([f"#{k} = :{k}" for k in updates.keys()])
     expression_attribute_values = {f":{k}": v for k, v in updates.items()}
+    expression_attribute_names = {f"#{k}": k for k in updates.keys()}
 
     print("🛠️ UpdateExpression:", update_expression)
-    # Para evitar logar valores sensíveis, só mostre as chaves e tipos:
     sanitized_values = {k: f"{type(v).__name__}({repr(v)[:60]})" for k, v in expression_attribute_values.items()}
     print("🛠️ ExpressionAttributeValues (sanitized):", sanitized_values)
 
@@ -352,6 +376,7 @@ def update_coworking_space_full(event):
             Key={'spaceId': space_id},
             UpdateExpression=update_expression,
             ExpressionAttributeValues=expression_attribute_values,
+            ExpressionAttributeNames=expression_attribute_names,
             ReturnValues="UPDATED_NEW"
         )
         print("✅ DynamoDB update OK:", json.dumps(resp.get('Attributes', {}), default=decimal_default)[:1000])
@@ -378,7 +403,6 @@ def get_user_by_id(event):
     path_params = event.get('pathParameters') or {}
     user_id = path_params.get('userId')
 
-    # ✅ Alternativa extra para extrair o userId manualmente do path
     if not user_id:
         full_path = event.get("requestContext", {}).get("http", {}).get("path", "")
         if "/users/" in full_path:
@@ -441,7 +465,7 @@ def get_spaces_by_hoster(event):
     # 2) tentar Query em GSI
     try:
         resp = table.query(
-            IndexName='byHoster',              # GSI esperado (PK: hoster)
+            IndexName='byHoster',
             KeyConditionExpression=Key('hoster').eq(user_id)
         )
         items = resp.get('Items', [])
@@ -454,9 +478,24 @@ def get_spaces_by_hoster(event):
         items = resp.get('Items', [])
         print(f"📄 Scan com filtro (hoster={user_id}) retornou {len(items)} itens")
 
-    # Conversões leves (mesma linha do get_available_coworking_spaces)
+    # Helpers de dias da semana
+    week_map = {1: "Dom", 2: "Seg", 3: "Ter", 4: "Qua", 5: "Qui", 6: "Sex", 7: "Sáb"}
+
     norm = []
     for it in items:
+        # Normaliza diasSemana (int/float -> string)
+        if 'diasSemana' in it and isinstance(it['diasSemana'], list):
+             new_days = []
+             for d in it['diasSemana']:
+                 if isinstance(d, (int, float, Decimal)):
+                     # Converte 1->Dom, 2->Seg...
+                     val = int(d)
+                     if val in week_map:
+                         new_days.append(week_map[val])
+                 elif isinstance(d, str):
+                     new_days.append(d)
+             it['diasSemana'] = new_days
+        
         if 'amenities' in it and isinstance(it['amenities'], list):
             try:
                 if all(isinstance(a, dict) and 'S' in a for a in it['amenities']):
@@ -471,7 +510,10 @@ def get_spaces_by_hoster(event):
             it['precoDia'] = float(it.get('precoDia', 0) or 0)
         except Exception:
             it['precoHora'] = 0
+            it['precoHora'] = 0
             it['precoDia'] = 0
+        
+        it['diaInteiro'] = it.get('diaInteiro', False)
 
         for campo in ['name', 'city', 'district']:
             if campo not in it:

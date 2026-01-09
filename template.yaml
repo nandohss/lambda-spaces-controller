@@ -4,7 +4,7 @@ Resources:
   CoworkingSpacesFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: coworking_spaces.coworking_spaces.add_coworking_space  # Handler completo com caminho
+      Handler: lambda_function.lambda_handler
       Runtime: python3.8
       Environment:
         Variables:
@@ -12,11 +12,23 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: CoworkingSpaces
+        - DynamoDBCrudPolicy:
+            TableName: users
       Events:
         CoworkingSpacesApi:
           Type: Api
           Properties:
             Path: /spaces
+            Method: any
+        CoworkingSpacesProxy:
+          Type: Api
+          Properties:
+            Path: /spaces/{proxy+}
+            Method: any
+        UsersProxy:
+          Type: Api
+          Properties:
+            Path: /users/{proxy+}
             Method: any
 
   ReservationsFunction:

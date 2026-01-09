@@ -13,12 +13,24 @@ from coworking_spaces import (
 def lambda_handler(event, context):
     print("🔎 EVENT RECEBIDO:", json.dumps(event))
 
-    http_method = event['requestContext']['http']['method']
-    full_path = event['requestContext']['http']['path']
-    
-    # Remove prefixo do estágio (/pro)
-    stage = event['requestContext']['stage']
-    if full_path.startswith(f"/{stage}"):
+    # Detectar formato do evento (REST API v1 vs HTTP API v2)
+    try:
+        if 'http' in event.get('requestContext', {}):
+            # HTTP API (v2)
+            http_method = event['requestContext']['http']['method']
+            full_path = event['requestContext']['http']['path']
+        else:
+            # REST API (v1) - Padrão do SAM 'Type: Api'
+            http_method = event['httpMethod']
+            full_path = event['path']
+    except KeyError:
+        # Fallback ou erro
+        print("❌ Formato de evento desconhecido")
+        return {'statusCode': 400, 'body': "Invalid event format"}
+
+    # Remove prefixo do estágio se presente (ex: /pro)
+    stage = event.get('requestContext', {}).get('stage', '')
+    if stage and full_path.startswith(f"/{stage}"):
         resource = full_path[len(f"/{stage}"):]
     else:
         resource = full_path
